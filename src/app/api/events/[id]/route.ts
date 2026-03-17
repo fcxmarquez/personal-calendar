@@ -4,6 +4,12 @@ import { db } from "@/db";
 import { events } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { z } from "zod";
+import {
+  deleteGoogleEvent,
+  getGoogleAccount,
+  getValidAccessToken,
+  updateGoogleEvent,
+} from "@/lib/google/calendar-client";
 
 const EVENT_COLORS = ["blue", "red", "green", "yellow", "purple", "pink"] as const;
 
@@ -50,9 +56,16 @@ export async function PATCH(
     return NextResponse.json({ error: "No fields to update" }, { status: 400 });
   }
 
-  // Fetch current event to validate cross-field constraints
+  // Fetch current event to validate cross-field constraints and get googleEventId
   const [current] = await db
-    .select({ startAt: events.startAt, endAt: events.endAt })
+    .select({
+      startAt: events.startAt,
+      endAt: events.endAt,
+      allDay: events.allDay,
+      title: events.title,
+      description: events.description,
+      googleEventId: events.googleEventId,
+    })
     .from(events)
     .where(and(eq(events.id, id), eq(events.userId, session.user.id)));
 
@@ -64,10 +77,7 @@ export async function PATCH(
   const newEndAt = parsed.data.endAt ? new Date(parsed.data.endAt) : current.endAt;
 
   if (newEndAt <= newStartAt) {
-    return NextResponse.json(
-      { error: "End must be after start" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "End must be after start" }, { status: 400 });
   }
 
   const [event] = await db
@@ -75,6 +85,28 @@ export async function PATCH(
     .set({ ...parsed.data, startAt: newStartAt, endAt: newEndAt, updatedAt: new Date() })
     .where(and(eq(events.id, id), eq(events.userId, session.user.id)))
     .returning(eventFields);
+
+  // Best-effort: push update to Google Calendar
+  const userId = session.user.id;
+  if (current.googleEventId) {
+    void (async () => {
+      try {
+        const account = await getGoogleAccount(userId);
+        if (!account) return;
+        const accessToken = await getValidAccessToken(account);
+        if (!accessToken) return;
+        await updateGoogleEvent(accessToken, current.googleEventId!, {
+          title: parsed.data.title ?? current.title,
+          description: parsed.data.description ?? current.description,
+          startAt: newStartAt,
+          endAt: newEndAt,
+          allDay: parsed.data.allDay ?? current.allDay,
+        });
+      } catch (err) {
+        console.error("Google Calendar update failed", id, err);
+      }
+    })();
+  }
 
   return NextResponse.json(event);
 }
@@ -96,10 +128,26 @@ export async function DELETE(
   const [event] = await db
     .delete(events)
     .where(and(eq(events.id, id), eq(events.userId, session.user.id)))
-    .returning({ id: events.id });
+    .returning({ id: events.id, googleEventId: events.googleEventId });
 
   if (!event) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  // Best-effort: delete from Google Calendar
+  const userId = session.user.id;
+  if (event.googleEventId) {
+    void (async () => {
+      try {
+        const account = await getGoogleAccount(userId);
+        if (!account) return;
+        const accessToken = await getValidAccessToken(account);
+        if (!accessToken) return;
+        await deleteGoogleEvent(accessToken, event.googleEventId!);
+      } catch (err) {
+        console.error("Google Calendar delete failed", id, err);
+      }
+    })();
   }
 
   return NextResponse.json({ success: true });

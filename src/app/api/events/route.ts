@@ -4,6 +4,11 @@ import { db } from "@/db";
 import { events } from "@/db/schema";
 import { eq, and, gte, lte } from "drizzle-orm";
 import { z } from "zod";
+import {
+  createGoogleEvent,
+  getGoogleAccount,
+  getValidAccessToken,
+} from "@/lib/google/calendar-client";
 
 const EVENT_COLORS = ["blue", "red", "green", "yellow", "purple", "pink"] as const;
 
@@ -97,6 +102,32 @@ export async function POST(req: NextRequest) {
       allDay: events.allDay,
       color: events.color,
     });
+
+  // Best-effort: push to Google Calendar and save the googleEventId back
+  const userId = session.user.id;
+  void (async () => {
+    try {
+      const account = await getGoogleAccount(userId);
+      if (!account) return;
+      const accessToken = await getValidAccessToken(account);
+      if (!accessToken) return;
+      const googleEventId = await createGoogleEvent(accessToken, {
+        title: event.title,
+        description: event.description,
+        startAt: event.startAt,
+        endAt: event.endAt,
+        allDay: event.allDay,
+      });
+      if (googleEventId) {
+        await db
+          .update(events)
+          .set({ googleEventId })
+          .where(eq(events.id, event.id));
+      }
+    } catch (err) {
+      console.error("Google Calendar push failed for new event", err);
+    }
+  })();
 
   return NextResponse.json(event, { status: 201 });
 }
