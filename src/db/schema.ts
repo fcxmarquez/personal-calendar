@@ -5,7 +5,7 @@ import {
   timestamp,
   primaryKey,
   integer,
-  uniqueIndex,
+  unique,
 } from "drizzle-orm/pg-core";
 import type { AdapterAccountType } from "next-auth/adapters";
 
@@ -85,6 +85,6 @@ export const events = pgTable(
     updatedAt: timestamp("updatedAt", { mode: "date" }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex("event_google_user_idx").on(t.googleEventId, t.userId),
+    unique("event_google_user_unique").on(t.googleEventId, t.userId),
   ]
 );
