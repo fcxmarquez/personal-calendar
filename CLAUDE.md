@@ -1,3 +1,7 @@
+## Project
+
+A personal calendar app vibecoded as an experiment in agentic software development. Built with Next.js 16 (App Router), Neon Postgres, Drizzle ORM, Auth.js v5 (Google OAuth), and shadcn/Tailwind. Supports creating, editing, and deleting events, and syncing from Google Calendar. Deployed via Vercel.
+
 ## Agentic Workflow
 
 Your development process will be as follows:
