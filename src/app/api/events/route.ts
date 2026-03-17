@@ -1,0 +1,86 @@
+import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@/lib/auth/config";
+import { db } from "@/db";
+import { events } from "@/db/schema";
+import { eq, and, gte, lte } from "drizzle-orm";
+import { z } from "zod";
+
+const EVENT_COLORS = ["blue", "red", "green", "yellow", "purple", "pink"] as const;
+
+const createEventSchema = z
+  .object({
+    title: z.string().min(1),
+    description: z.string().optional(),
+    startAt: z.string().datetime(),
+    endAt: z.string().datetime(),
+    allDay: z.boolean().optional().default(false),
+    color: z.enum(EVENT_COLORS).optional().default("blue"),
+  })
+  .refine((data) => new Date(data.endAt) > new Date(data.startAt), {
+    message: "End must be after start",
+    path: ["endAt"],
+  });
+
+export async function GET(req: NextRequest) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { searchParams } = new URL(req.url);
+  const from = searchParams.get("from");
+  const to = searchParams.get("to");
+
+  const conditions = [eq(events.userId, session.user.id)];
+
+  if (from) {
+    const fromDate = new Date(from);
+    if (isNaN(fromDate.getTime()))
+      return NextResponse.json({ error: "Invalid 'from' date" }, { status: 400 });
+    conditions.push(gte(events.startAt, fromDate));
+  }
+  if (to) {
+    const toDate = new Date(to);
+    if (isNaN(toDate.getTime()))
+      return NextResponse.json({ error: "Invalid 'to' date" }, { status: 400 });
+    conditions.push(lte(events.endAt, toDate));
+  }
+
+  const rows = await db
+    .select()
+    .from(events)
+    .where(and(...conditions))
+    .orderBy(events.startAt);
+
+  return NextResponse.json(rows);
+}
+
+export async function POST(req: NextRequest) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const body = await req.json();
+  const parsed = createEventSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+  }
+
+  const { title, description, startAt, endAt, allDay, color } = parsed.data;
+
+  const [event] = await db
+    .insert(events)
+    .values({
+      userId: session.user.id,
+      title,
+      description,
+      startAt: new Date(startAt),
+      endAt: new Date(endAt),
+      allDay,
+      color,
+    })
+    .returning();
+
+  return NextResponse.json(event, { status: 201 });
+}
