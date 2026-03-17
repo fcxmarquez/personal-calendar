@@ -9,8 +9,8 @@ const EVENT_COLORS = ["blue", "red", "green", "yellow", "purple", "pink"] as con
 
 const createEventSchema = z
   .object({
-    title: z.string().min(1),
-    description: z.string().optional(),
+    title: z.string().min(1).max(200),
+    description: z.string().max(5000).optional(),
     startAt: z.string().datetime(),
     endAt: z.string().datetime(),
     allDay: z.boolean().optional().default(false),
@@ -47,7 +47,15 @@ export async function GET(req: NextRequest) {
   }
 
   const rows = await db
-    .select()
+    .select({
+      id: events.id,
+      title: events.title,
+      description: events.description,
+      startAt: events.startAt,
+      endAt: events.endAt,
+      allDay: events.allDay,
+      color: events.color,
+    })
     .from(events)
     .where(and(...conditions))
     .orderBy(events.startAt);
@@ -80,7 +88,15 @@ export async function POST(req: NextRequest) {
       allDay,
       color,
     })
-    .returning();
+    .returning({
+      id: events.id,
+      title: events.title,
+      description: events.description,
+      startAt: events.startAt,
+      endAt: events.endAt,
+      allDay: events.allDay,
+      color: events.color,
+    });
 
   return NextResponse.json(event, { status: 201 });
 }
