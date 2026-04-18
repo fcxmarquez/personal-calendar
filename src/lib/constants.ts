@@ -1,0 +1,5 @@
+export const GOOGLE_SYNC_WINDOW_DAYS = 30;
+export const DEFAULT_EVENT_DURATION_MS = 60 * 60 * 1000;
+export const QUERY_STALE_TIME_MS = 60 * 1000;
+export const MAX_EVENTS_PER_QUERY = 500;
+export const TOKEN_REFRESH_BUFFER_MS = 60_000;

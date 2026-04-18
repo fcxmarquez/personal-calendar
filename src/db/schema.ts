@@ -64,6 +64,15 @@ export const verificationTokens = pgTable(
   ]
 );
 
+// Per-user Google Calendar sync state (incremental sync tokens)
+export const syncState = pgTable("sync_state", {
+  userId: text("userId")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  googleSyncToken: text("googleSyncToken"),
+  lastSyncedAt: timestamp("lastSyncedAt", { mode: "date" }),
+});
+
 // Calendar events table
 export const events = pgTable(
   "event",

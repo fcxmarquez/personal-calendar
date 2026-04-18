@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import {
   startOfMonth,
   endOfMonth,
@@ -7,27 +8,25 @@ import {
   endOfWeek,
   eachDayOfInterval,
   isSameMonth,
-  isSameDay,
   isToday,
+  startOfDay,
+  endOfDay,
   format,
 } from "date-fns";
 import { cn } from "@/lib/utils";
+import { getColorClass } from "@/lib/events/colors";
 import type { CalendarEvent } from "./types";
-
-const EVENT_COLORS: Record<string, string> = {
-  blue: "bg-blue-500 text-white",
-  red: "bg-red-500 text-white",
-  green: "bg-green-500 text-white",
-  yellow: "bg-yellow-400 text-black",
-  purple: "bg-purple-500 text-white",
-  pink: "bg-pink-500 text-white",
-};
 
 interface MonthViewProps {
   currentDate: Date;
   events: CalendarEvent[];
   onDayClick: (date: Date) => void;
   onEventClick: (event: CalendarEvent) => void;
+}
+
+interface ParsedEvent extends CalendarEvent {
+  startDate: Date;
+  endDate: Date;
 }
 
 export function MonthView({
@@ -42,12 +41,26 @@ export function MonthView({
   const calEnd = endOfWeek(monthEnd);
   const days = eachDayOfInterval({ start: calStart, end: calEnd });
 
-  const getEventsForDay = (day: Date) =>
-    events.filter((e) => isSameDay(new Date(e.startAt), day));
+  const parsed = useMemo<ParsedEvent[]>(
+    () =>
+      events.map((e) => ({
+        ...e,
+        startDate: new Date(e.startAt),
+        endDate: new Date(e.endAt),
+      })),
+    [events]
+  );
+
+  const getEventsForDay = (day: Date) => {
+    const dayStart = startOfDay(day);
+    const dayEnd = endOfDay(day);
+    return parsed.filter(
+      (e) => e.startDate <= dayEnd && e.endDate >= dayStart
+    );
+  };
 
   return (
     <div className="flex flex-col flex-1">
-      {/* Day headers */}
       <div className="grid grid-cols-7 border-b">
         {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
           <div
@@ -59,7 +72,6 @@ export function MonthView({
         ))}
       </div>
 
-      {/* Calendar grid */}
       <div className="grid grid-cols-7 flex-1">
         {days.map((day) => {
           const dayEvents = getEventsForDay(day);
@@ -99,7 +111,7 @@ export function MonthView({
                     }}
                     className={cn(
                       "w-full text-left text-xs px-1.5 py-0.5 rounded truncate",
-                      EVENT_COLORS[event.color] ?? EVENT_COLORS.blue
+                      getColorClass(event.color)
                     )}
                   >
                     {event.title}

@@ -1,20 +1,20 @@
 "use client";
 
 import { useState } from "react";
-import { addMonths, subMonths, startOfMonth, endOfMonth } from "date-fns";
+import {
+  addMonths,
+  subMonths,
+  startOfMonth,
+  endOfMonth,
+  getYear,
+  getMonth,
+} from "date-fns";
 import { useQuery } from "@tanstack/react-query";
 import { CalendarHeader } from "./calendar-header";
 import { MonthView } from "./month-view";
 import { EventDialog } from "./event-dialog";
 import type { CalendarEvent } from "./types";
-
-async function fetchEvents(from: Date, to: Date): Promise<CalendarEvent[]> {
-  const res = await fetch(
-    `/api/events?from=${from.toISOString()}&to=${to.toISOString()}`
-  );
-  if (!res.ok) throw new Error("Failed to fetch events");
-  return res.json();
-}
+import { eventKeys, fetchEvents } from "@/lib/api-client";
 
 export function CalendarView() {
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -22,11 +22,13 @@ export function CalendarView() {
   const [selectedDate, setSelectedDate] = useState<Date | undefined>();
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | undefined>();
 
+  const year = getYear(currentDate);
+  const month = getMonth(currentDate);
   const from = startOfMonth(subMonths(currentDate, 1));
   const to = endOfMonth(addMonths(currentDate, 1));
 
   const { data: events = [], error } = useQuery({
-    queryKey: ["events", from.toISOString(), to.toISOString()],
+    queryKey: eventKeys.month(year, month),
     queryFn: () => fetchEvents(from, to),
   });
 

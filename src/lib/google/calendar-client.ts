@@ -1,6 +1,12 @@
 import { db } from "@/db";
 import { accounts } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
+import { env } from "@/lib/env";
+import { TOKEN_REFRESH_BUFFER_MS } from "@/lib/constants";
+import {
+  inclusiveToExclusiveEnd,
+  toGoogleDateOnly,
+} from "@/lib/events/dates";
 
 // ── Token management ──────────────────────────────────────────────────────────
 
@@ -14,12 +20,17 @@ export async function getGoogleAccount(userId: string): Promise<AccountRow | nul
   return account ?? null;
 }
 
+/**
+ * Two concurrent requests can each refresh the token; the last DB write wins.
+ * Both tokens stay valid briefly with Google, and subsequent calls will read
+ * whichever was persisted last. Serializing refresh would need a lock — not
+ * worth it for a single-user app.
+ */
 export async function getValidAccessToken(account: AccountRow): Promise<string | null> {
-  // Token still valid (with 60s buffer)
   if (
     account.access_token &&
     account.expires_at &&
-    account.expires_at * 1000 > Date.now() + 60_000
+    account.expires_at * 1000 > Date.now() + TOKEN_REFRESH_BUFFER_MS
   ) {
     return account.access_token;
   }
@@ -31,8 +42,8 @@ export async function getValidAccessToken(account: AccountRow): Promise<string |
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "refresh_token",
-      client_id: process.env.GOOGLE_CLIENT_ID!,
-      client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+      client_id: env.GOOGLE_CLIENT_ID,
+      client_secret: env.GOOGLE_CLIENT_SECRET,
       refresh_token: account.refresh_token,
     }),
   });
@@ -58,6 +69,18 @@ export async function getValidAccessToken(account: AccountRow): Promise<string |
   return newAccessToken;
 }
 
+/**
+ * Resolves the Google access token for a user. Returns null if the user has
+ * no linked Google account or the token cannot be refreshed — callers should
+ * treat null as "skip Google sync" rather than a hard error, since local
+ * state is the source of truth.
+ */
+export async function getGoogleAccessTokenForUser(userId: string): Promise<string | null> {
+  const account = await getGoogleAccount(userId);
+  if (!account) return null;
+  return getValidAccessToken(account);
+}
+
 // ── Event payload builder ─────────────────────────────────────────────────────
 
 interface EventPayload {
@@ -75,13 +98,10 @@ function buildGoogleEventBody(event: EventPayload) {
   };
 
   if (event.allDay) {
-    // Google all-day events use exclusive end dates (end = last day + 1)
-    const endExclusive = new Date(event.endAt);
-    endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
     return {
       ...base,
-      start: { date: event.startAt.toISOString().split("T")[0] },
-      end: { date: endExclusive.toISOString().split("T")[0] },
+      start: { date: toGoogleDateOnly(event.startAt) },
+      end: { date: toGoogleDateOnly(inclusiveToExclusiveEnd(event.endAt)) },
     };
   }
 
@@ -153,4 +173,66 @@ export async function deleteGoogleEvent(
     console.error("deleteGoogleEvent failed", err);
     return false;
   }
+}
+
+// ── Listing & sync ─────────────────────────────────────────────────────────────
+
+export interface GoogleEventItem {
+  id: string;
+  status?: string;
+  summary?: string;
+  description?: string;
+  start?: { dateTime?: string; date?: string };
+  end?: { dateTime?: string; date?: string };
+}
+
+export interface ListGoogleEventsResult {
+  items: GoogleEventItem[];
+  nextSyncToken: string | null;
+  /** True if Google returned 410 Gone — caller must fall back to a full sync. */
+  syncTokenExpired: boolean;
+}
+
+/**
+ * Lists primary-calendar events. Pass `syncToken` for incremental sync, or
+ * `timeMin`/`timeMax` for a window-based sync. When Google returns 410 Gone
+ * (sync token expired), we signal the caller to restart with a full sync.
+ */
+export async function listGoogleEvents(
+  accessToken: string,
+  opts: { syncToken?: string; timeMin?: string; timeMax?: string }
+): Promise<ListGoogleEventsResult | null> {
+  const params = new URLSearchParams({ singleEvents: "true" });
+  if (opts.syncToken) {
+    params.set("syncToken", opts.syncToken);
+  } else {
+    if (opts.timeMin) params.set("timeMin", opts.timeMin);
+    if (opts.timeMax) params.set("timeMax", opts.timeMax);
+    params.set("orderBy", "startTime");
+  }
+
+  const items: GoogleEventItem[] = [];
+  let pageToken: string | undefined;
+  let nextSyncToken: string | null = null;
+
+  do {
+    if (pageToken) params.set("pageToken", pageToken);
+    else params.delete("pageToken");
+    const res = await fetch(`${CALENDAR_BASE}?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (res.status === 410) {
+      return { items: [], nextSyncToken: null, syncTokenExpired: true };
+    }
+    if (!res.ok) {
+      console.error("listGoogleEvents failed", res.status);
+      return null;
+    }
+    const data = await res.json();
+    if (Array.isArray(data.items)) items.push(...data.items);
+    pageToken = data.nextPageToken;
+    if (data.nextSyncToken) nextSyncToken = data.nextSyncToken;
+  } while (pageToken);
+
+  return { items, nextSyncToken, syncTokenExpired: false };
 }

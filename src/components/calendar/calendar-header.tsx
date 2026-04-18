@@ -5,6 +5,7 @@ import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { eventKeys, syncGoogleCalendarRequest } from "@/lib/api-client";
 
 interface CalendarHeaderProps {
   currentDate: Date;
@@ -22,14 +23,10 @@ export function CalendarHeader({
   const queryClient = useQueryClient();
 
   const syncMutation = useMutation({
-    mutationFn: async () => {
-      const res = await fetch("/api/google-calendar", { method: "POST" });
-      if (!res.ok) throw new Error("Sync failed");
-      return res.json();
-    },
+    mutationFn: syncGoogleCalendarRequest,
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["events"] });
-      toast.success(`Synced ${data.synced} new events from Google Calendar`);
+      queryClient.invalidateQueries({ queryKey: eventKeys.all });
+      toast.success(`Synced ${data.synced} events from Google Calendar`);
     },
     onError: () => {
       toast.error("Failed to sync Google Calendar");

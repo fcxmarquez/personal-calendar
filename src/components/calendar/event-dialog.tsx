@@ -6,7 +6,7 @@ import { z } from "zod";
 import { format } from "date-fns";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -26,30 +26,36 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { CalendarEvent } from "./types";
+import {
+  COLOR_OPTIONS,
+  DEFAULT_EVENT_COLOR,
+  EVENT_COLORS,
+  type EventColor,
+} from "@/lib/events/colors";
+import { DEFAULT_EVENT_DURATION_MS } from "@/lib/constants";
+import {
+  createEventRequest,
+  deleteEventRequest,
+  eventKeys,
+  updateEventRequest,
+} from "@/lib/api-client";
 
-const eventSchema = z
+const DATETIME_LOCAL_FORMAT = "yyyy-MM-dd'T'HH:mm";
+
+const formSchema = z
   .object({
     title: z.string().min(1, "Title is required"),
     description: z.string().optional(),
     startAt: z.string().min(1, "Start time is required"),
     endAt: z.string().min(1, "End time is required"),
-    color: z.string().min(1),
+    color: z.enum(EVENT_COLORS),
   })
   .refine((data) => new Date(data.endAt) > new Date(data.startAt), {
     message: "End must be after start",
     path: ["endAt"],
   });
 
-type EventFormValues = z.infer<typeof eventSchema>;
-
-const COLORS = [
-  { value: "blue", label: "Blue" },
-  { value: "red", label: "Red" },
-  { value: "green", label: "Green" },
-  { value: "yellow", label: "Yellow" },
-  { value: "purple", label: "Purple" },
-  { value: "pink", label: "Pink" },
-];
+type FormValues = z.infer<typeof formSchema>;
 
 interface EventDialogProps {
   open: boolean;
@@ -66,58 +72,64 @@ export function EventDialog({
 }: EventDialogProps) {
   const queryClient = useQueryClient();
   const isEditing = !!event;
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const defaultStart = defaultDate ?? new Date();
-  const defaultEnd = new Date(defaultStart.getTime() + 60 * 60 * 1000);
+  const defaultEnd = new Date(
+    defaultStart.getTime() + DEFAULT_EVENT_DURATION_MS
+  );
 
-  const form = useForm<EventFormValues>({
-    resolver: zodResolver(eventSchema),
+  const form = useForm<FormValues>({
+    resolver: zodResolver(formSchema),
     defaultValues: {
       title: "",
       description: "",
-      startAt: format(defaultStart, "yyyy-MM-dd'T'HH:mm"),
-      endAt: format(defaultEnd, "yyyy-MM-dd'T'HH:mm"),
-      color: "blue",
+      startAt: format(defaultStart, DATETIME_LOCAL_FORMAT),
+      endAt: format(defaultEnd, DATETIME_LOCAL_FORMAT),
+      color: DEFAULT_EVENT_COLOR,
     },
   });
 
-  // Reset form whenever the dialog opens with a different event or date
+  // Reset form whenever the dialog opens with a different event or date.
+  // defaultDate/event are the only true inputs — form is deliberately omitted.
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setConfirmingDelete(false);
+      return;
+    }
     const start = event ? new Date(event.startAt) : (defaultDate ?? new Date());
     const end = event
       ? new Date(event.endAt)
-      : new Date(start.getTime() + 60 * 60 * 1000);
+      : new Date(start.getTime() + DEFAULT_EVENT_DURATION_MS);
     form.reset({
       title: event?.title ?? "",
       description: event?.description ?? "",
-      startAt: format(start, "yyyy-MM-dd'T'HH:mm"),
-      endAt: format(end, "yyyy-MM-dd'T'HH:mm"),
-      color: event?.color ?? "blue",
+      startAt: format(start, DATETIME_LOCAL_FORMAT),
+      endAt: format(end, DATETIME_LOCAL_FORMAT),
+      color: event?.color ?? DEFAULT_EVENT_COLOR,
     });
-  }, [open, event, defaultDate]); // eslint-disable-line react-hooks/exhaustive-deps
+    setConfirmingDelete(false);
+    // form identity is stable; excluding it avoids resetting on every re-render
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, event, defaultDate]);
 
-  const mutation = useMutation({
-    mutationFn: async (values: EventFormValues) => {
-      const url = isEditing ? `/api/events/${event.id}` : "/api/events";
-      const method = isEditing ? "PATCH" : "POST";
-      const res = await fetch(url, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...values,
-          startAt: new Date(values.startAt).toISOString(),
-          endAt: new Date(values.endAt).toISOString(),
-        }),
-      });
-      if (!res.ok) throw new Error("Failed to save event");
-      return res.json();
+  const saveMutation = useMutation({
+    mutationFn: async (values: FormValues) => {
+      const payload = {
+        title: values.title,
+        description: values.description || undefined,
+        startAt: new Date(values.startAt).toISOString(),
+        endAt: new Date(values.endAt).toISOString(),
+        color: values.color satisfies EventColor,
+      };
+      return isEditing
+        ? updateEventRequest(event!.id, payload)
+        : createEventRequest({ ...payload, allDay: false });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["events"] });
+      queryClient.invalidateQueries({ queryKey: eventKeys.all });
       toast.success(isEditing ? "Event updated" : "Event created");
       onOpenChange(false);
-      form.reset();
     },
     onError: () => {
       toast.error("Failed to save event");
@@ -125,21 +137,25 @@ export function EventDialog({
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async () => {
-      const res = await fetch(`/api/events/${event!.id}`, {
-        method: "DELETE",
-      });
-      if (!res.ok) throw new Error("Failed to delete event");
-    },
+    mutationFn: () => deleteEventRequest(event!.id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["events"] });
+      queryClient.invalidateQueries({ queryKey: eventKeys.all });
       toast.success("Event deleted");
       onOpenChange(false);
     },
     onError: () => {
       toast.error("Failed to delete event");
+      setConfirmingDelete(false);
     },
   });
+
+  const handleDeleteClick = () => {
+    if (!confirmingDelete) {
+      setConfirmingDelete(true);
+      return;
+    }
+    deleteMutation.mutate();
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -149,7 +165,7 @@ export function EventDialog({
         </DialogHeader>
 
         <form
-          onSubmit={form.handleSubmit((values) => mutation.mutate(values))}
+          onSubmit={form.handleSubmit((values) => saveMutation.mutate(values))}
           className="space-y-4"
         >
           <div className="space-y-1">
@@ -187,20 +203,27 @@ export function EventDialog({
                 type="datetime-local"
                 {...form.register("endAt")}
               />
+              {form.formState.errors.endAt && (
+                <p className="text-destructive text-sm">
+                  {form.formState.errors.endAt.message}
+                </p>
+              )}
             </div>
           </div>
 
           <div className="space-y-1">
             <Label>Color</Label>
             <Select
-              defaultValue={(event?.color ?? "blue") || "blue"}
-              onValueChange={(val) => val && form.setValue("color", val)}
+              value={form.watch("color")}
+              onValueChange={(val) =>
+                form.setValue("color", val as EventColor)
+              }
             >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {COLORS.map((c) => (
+                {COLOR_OPTIONS.map((c) => (
                   <SelectItem key={c.value} value={c.value}>
                     <span className="flex items-center gap-2">
                       <span
@@ -220,14 +243,22 @@ export function EventDialog({
               <Button
                 type="button"
                 variant="destructive"
-                onClick={() => deleteMutation.mutate()}
+                onClick={handleDeleteClick}
                 disabled={deleteMutation.isPending}
               >
-                Delete
+                {deleteMutation.isPending
+                  ? "Deleting…"
+                  : confirmingDelete
+                    ? "Confirm delete?"
+                    : "Delete"}
               </Button>
             )}
-            <Button type="submit" disabled={mutation.isPending}>
-              {mutation.isPending ? "Saving…" : isEditing ? "Update" : "Create"}
+            <Button type="submit" disabled={saveMutation.isPending}>
+              {saveMutation.isPending
+                ? "Saving…"
+                : isEditing
+                  ? "Update"
+                  : "Create"}
             </Button>
           </DialogFooter>
         </form>
